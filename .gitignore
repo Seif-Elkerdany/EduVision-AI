@@ -1,0 +1,42 @@
+# Python caches and test artifacts
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+
+__pycache__/
+*.py[codz]
+*$py.class
+.vscode/
+
+# C extensions
+*.so
+
+# Virtual environments and local env files
+.venv/
+venv/
+env/
+ENV/
+.env
+
+# Editor folders
+.vscode/
+.idea/
+
+# EduVision generated CV data
+data/students/*
+!data/students/.gitkeep
+data/embeddings/*
+!data/embeddings/.gitkeep
+data/logs/*
+!data/logs/.gitkeep
+data/models/*
+!data/models/.gitkeep
+
+# Legacy generated path from an older CV config
+src/data/

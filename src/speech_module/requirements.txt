@@ -1,0 +1,18 @@
+# Runtime dependencies
+fastapi==0.136.1
+pydantic==2.13.3
+torch==2.11.0
+transformers==5.7.0
+uvicorn[standard]==0.46.0
+opencv-python>=4.13,<5.0
+numpy>=2.4,<3.0
+insightface==0.7.3
+# Use the CPU-safe default below, or swap to onnxruntime-gpu==1.25.1 on CUDA systems.
+onnxruntime==1.25.1
+emotiefflib==1.1.1
+tqdm>=4.67,<5.0
+scikit-learn>=1.8,<2.0
+
+# Test dependencies
+httpx==0.28.1
+pytest==9.0.3
