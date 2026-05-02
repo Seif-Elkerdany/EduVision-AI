@@ -1,11 +1,19 @@
 from __future__ import annotations
 
+import contextlib
 import cv2
 import mediapipe as mp
 from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
 import numpy as np
 from pathlib import Path
+from urllib.request import urlopen
+
+
+MEDIAPIPE_FACE_LANDMARKER_URL = (
+    "https://storage.googleapis.com/mediapipe-models/"
+    "face_landmarker/face_landmarker/float16/latest/face_landmarker.task"
+)
 
 
 class MouthDetector:
@@ -15,7 +23,7 @@ class MouthDetector:
         project_root = Path(__file__).resolve().parents[2]
         model_path = project_root / "data" / "models" / "mediapipe" / "face_landmarker.task"
         if not model_path.exists():
-            raise RuntimeError(f"Missing MediaPipe model at {model_path}. Please download it.")
+            self._download_model(model_path)
 
         base_options = python.BaseOptions(model_asset_path=str(model_path))
         options = vision.FaceLandmarkerOptions(
@@ -30,6 +38,18 @@ class MouthDetector:
         self.consecutive_frames = consecutive_frames
         self.talking_frames = 0
         self.is_talking = False
+
+    def _download_model(self, model_path: Path) -> None:
+        model_path.parent.mkdir(parents=True, exist_ok=True)
+        print(f"MediaPipe model not found. Downloading to {model_path} ...")
+        try:
+            with contextlib.closing(urlopen(MEDIAPIPE_FACE_LANDMARKER_URL, timeout=60)) as response:
+                model_path.write_bytes(response.read())
+        except Exception as exc:
+            raise RuntimeError(
+                f"Missing MediaPipe model at {model_path}, and automatic download failed. "
+                f"Download it manually from {MEDIAPIPE_FACE_LANDMARKER_URL}"
+            ) from exc
 
     def process(self, frame: np.ndarray) -> bool:
         """Process a BGR frame and return True if any person is talking."""

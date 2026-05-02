@@ -40,3 +40,4 @@ data/models/*
 
 # Legacy generated path from an older CV config
 src/data/
+eduvisionvenv

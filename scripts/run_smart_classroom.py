@@ -31,6 +31,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run the combined Smart Classroom CV and Speech pipeline.")
     parser.add_argument("--camera-index", type=int, default=0)
     parser.add_argument("--device", default=None, choices=["cpu", "cuda"])
+    parser.add_argument("--frame-skip", type=int, default=0)
     parser.add_argument("--headless", action="store_true")
     return parser.parse_args()
 
@@ -53,6 +54,7 @@ def main() -> int:
     config = CVConfig(
         device=args.device or detect_device(),
         webcam_index=args.camera_index,
+        frame_skip=args.frame_skip,
     )
     pipeline = SmartClassroomPipeline(config)
 
