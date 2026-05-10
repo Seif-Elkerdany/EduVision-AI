@@ -231,6 +231,10 @@
                 <button class="mic-btn" id="mic-btn" onclick="toggleMic()">🎙</button>
                 <div class="mic-status" id="mic-status">Click to listen</div>
               </div>
+              <div class="question-student-field">
+                <label for="question-student-select">Question Asked By</label>
+                <select id="question-student-select" class="question-student-select"></select>
+              </div>
               <div class="speech-area" id="speech-area">
                 <div class="speech-label">Transcribed Text</div>
                 <div class="speech-text placeholder" id="speech-text">Waiting for speech input…</div>
@@ -803,6 +807,7 @@ function switchSession(idx) {
   renderAttendanceBadges();
   renderAttendanceTable();
   updateDashStats();
+  renderQuestionStudentSelect();
 }
 
 function cycleStatus(sessionIdx, studentIdx) {
@@ -814,6 +819,7 @@ function cycleStatus(sessionIdx, studentIdx) {
   renderAttendanceBadges();
   renderSessionSummary();
   renderAttendanceTable();
+  renderQuestionStudentSelect();
 }
 
 function renderAttendanceTable() {
@@ -1150,6 +1156,43 @@ function renderWaveform() {
 // ══════════════════════════════════════
 //  NAVIGATION
 // ══════════════════════════════════════
+function getQuestionStudentOptions() {
+  const session = SESSIONS[currentSessionIdx] || SESSIONS[SESSIONS.length - 1];
+  if (!session || !session.students) return [];
+  return session.students
+    .filter(s => s.status !== 'Absent')
+    .map(s => ({ name: s.name, status: s.status }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+}
+
+function renderQuestionStudentSelect() {
+  const select = document.getElementById('question-student-select');
+  if (!select) return;
+
+  const previous = select.value;
+  const options = getQuestionStudentOptions();
+  if (!options.length) {
+    select.innerHTML = '<option value="">No present students</option>';
+    select.disabled = true;
+    return;
+  }
+
+  select.disabled = false;
+  select.innerHTML = '';
+  options.forEach(s => {
+    const option = document.createElement('option');
+    option.value = s.name;
+    option.textContent = `${s.name}${s.status === 'Late' ? ' (Late)' : ''}`;
+    select.appendChild(option);
+  });
+  select.value = options.some(s => s.name === previous) ? previous : options[0].name;
+}
+
+function getSelectedQuestionStudent() {
+  const select = document.getElementById('question-student-select');
+  return select && select.value ? select.value : 'Student';
+}
+
 let _currentPage = 'dashboard';
 function navigate(page) {
   _currentPage = page;
@@ -1178,7 +1221,7 @@ function navigate(page) {
   // lazy render
   if(page==='dashboard') { updateDashStats(); renderDashTable(); renderQuestionFeed(); renderTimeline(); }
   if(page==='vision')    { initWebcam(); }
-  if(page==='speech')    { renderNLPQuestions(); renderWaveform(); }
+  if(page==='speech')    { renderQuestionStudentSelect(); renderNLPQuestions(); renderWaveform(); }
   if(page==='analytics') { renderTopicChart(); renderMoodChart(); renderAttendChart(); renderTopStudents(); }
 }
 
@@ -1230,7 +1273,7 @@ async function _classifyAndDisplay(transcript, fallbackTopic = null, fallbackCon
     const res  = await fetch(`${API_BASE}/api/classify`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text: transcript, student: 'Student' }),
+      body: JSON.stringify({ text: transcript, student: getSelectedQuestionStudent() }),
       signal: controller.signal,
     });
     clearTimeout(tid);
@@ -1248,7 +1291,13 @@ async function _classifyAndDisplay(transcript, fallbackTopic = null, fallbackCon
 
     // Refresh question log from server
     fetch(`${API_BASE}/api/questions`).then(r => r.json()).then(qs => {
-      if (qs.length) { QUESTIONS = qs; renderNLPQuestions(); renderQuestionFeed(); }
+      if (qs.length) {
+        QUESTIONS = qs;
+        renderNLPQuestions();
+        renderQuestionFeed();
+        updateDashStats();
+        if (_currentPage === 'analytics') renderTopStudents();
+      }
     }).catch(() => {});
 
   } catch (err) {
@@ -1466,6 +1515,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   renderQuestionFeed();
   renderTimeline();
   renderWaveform();
+  renderQuestionStudentSelect();
 
   // Poll for updated attendance + questions every 10 seconds
   setInterval(async () => {
@@ -1482,7 +1532,9 @@ window.addEventListener('DOMContentLoaded', async () => {
         renderDashTable(); renderTimeline(); renderQuestionFeed();
         renderSessionTabs(); renderSessionSummary(); renderAttendanceBadges(); renderAttendanceTable();
         renderAnalytics();
+        renderQuestionStudentSelect();
         if (_currentPage === 'speech') renderNLPQuestions();
+        if (_currentPage === 'analytics') renderTopStudents();
       }
     } catch (_) {}
   }, 10000);
