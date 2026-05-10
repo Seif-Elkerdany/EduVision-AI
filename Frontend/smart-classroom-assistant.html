@@ -6,7 +6,7 @@
 <title>ClassMind AI — Smart Classroom Assistant</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=DM+Sans:ital,wght@0,300;0,400;0,500;1,300&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/static/smart-classroom-assistant.css">
+<link rel="stylesheet" href="/static/smart-classroom-assistant.css?v=students-2">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/apexcharts"></script>
@@ -40,6 +40,9 @@
       </div>
 
       <div class="nav-section-label" style="margin-top:8px;">System</div>
+      <div class="nav-item" onclick="navigate('students')">
+        <span class="nav-icon">+</span> Students
+      </div>
       <div class="nav-item" onclick="navigate('settings')">
         <span class="nav-icon">⚙</span> Settings
       </div>
@@ -177,6 +180,7 @@
         <!-- Session Tabs -->
         <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:10px;">
           <div class="session-tabs" id="session-tabs" style="margin-bottom:0;"></div>
+          <button class="session-delete-btn" id="delete-session-btn" onclick="deleteCurrentSession()" disabled>Delete Session</button>
         </div>
 
         <!-- Session Summary Bar -->
@@ -233,7 +237,10 @@
               </div>
               <div class="question-student-field">
                 <label for="question-student-select">Question Asked By</label>
-                <select id="question-student-select" class="question-student-select"></select>
+                <div class="question-student-select-wrap">
+                  <span class="question-student-indicator"></span>
+                  <select id="question-student-select" class="question-student-select"></select>
+                </div>
               </div>
               <div class="speech-area" id="speech-area">
                 <div class="speech-label">Transcribed Text</div>
@@ -386,6 +393,66 @@
 
 
       <!-- ══ SETTINGS ══ -->
+      <div id="page-students" class="page">
+        <div class="section-header">
+          <div class="section-title">Students</div>
+          <div class="section-subtitle">Enrollment and roster</div>
+        </div>
+        <div class="grid-2">
+          <div class="card">
+            <div class="card-header">
+              <div class="card-title">Enrolled Roster</div>
+              <div class="card-badge" id="student-roster-count">0 students</div>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th style="width:42px">#</th>
+                    <th>Student</th>
+                    <th style="width:90px">Status</th>
+                    <th style="width:96px">Action</th>
+                  </tr>
+                </thead>
+                <tbody id="student-roster-table"></tbody>
+              </table>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-header">
+              <div class="card-title">Add Student</div>
+            </div>
+            <form id="enroll-form" class="enroll-form" onsubmit="submitEnrollment(event)">
+              <div class="form-field">
+                <label for="enroll-student-name">Student Name</label>
+                <input id="enroll-student-name" name="student_name" class="form-input" type="text" autocomplete="off" required>
+              </div>
+              <div class="form-field">
+                <label for="enroll-images">Face Images</label>
+                <input id="enroll-images" name="images" class="form-input file-input" type="file" accept="image/*" multiple required>
+              </div>
+              <div class="enroll-grid">
+                <div class="form-field">
+                  <label for="enroll-blur">Blur</label>
+                  <input id="enroll-blur" class="form-input" type="number" value="35" min="0" step="5">
+                </div>
+                <div class="form-field">
+                  <label for="enroll-score">Detection</label>
+                  <input id="enroll-score" class="form-input" type="number" value="0.55" min="0" max="1" step="0.05">
+                </div>
+                <div class="form-field">
+                  <label for="enroll-face-size">Face Size</label>
+                  <input id="enroll-face-size" class="form-input" type="number" value="50" min="20" step="5">
+                </div>
+              </div>
+              <button class="enroll-submit" id="enroll-submit-btn" type="submit">Enroll Student</button>
+            </form>
+            <div id="enroll-result" class="enroll-result"></div>
+          </div>
+        </div>
+      </div>
+
       <div id="page-settings" class="page">
         <div class="section-header">
           <div class="section-title">Settings</div>
@@ -508,23 +575,63 @@ let SESSIONS = [];
 let QUESTIONS = [];
 
 let currentSessionIdx = 0;
+const DATA_CACHE_MS = 15000;
+const _dataLoadedAt = { roster: 0, sessions: 0, questions: 0 };
 
 // ══════════════════════════════════════
 //  API DATA LOADING
 // ══════════════════════════════════════
 
-async function loadDataFromAPI() {
+function _isDataFresh(key) {
+  return _dataLoadedAt[key] && Date.now() - _dataLoadedAt[key] < DATA_CACHE_MS;
+}
+
+async function _fetchJson(path, fallback) {
   try {
-    const [roster, sessions, questions] = await Promise.all([
-      fetch(`${API_BASE}/api/roster`).then(r => r.json()).catch(() => []),
-      fetch(`${API_BASE}/api/sessions`).then(r => r.json()).catch(() => []),
-      fetch(`${API_BASE}/api/questions`).then(r => r.json()).catch(() => []),
-    ]);
-    if (roster.length)    ROSTER    = roster;
-    if (sessions.length)  SESSIONS  = sessions;
-    if (questions.length) QUESTIONS = questions;
+    const response = await fetch(`${API_BASE}${path}`);
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    return await response.json();
   } catch (e) {
-    console.warn('API not reachable, using mock data:', e);
+    console.warn(`API not reachable for ${path}:`, e);
+    return fallback;
+  }
+}
+
+async function loadRoster(force = false) {
+  if (!force && _isDataFresh('roster')) return;
+  const roster = await _fetchJson('/api/roster', ROSTER);
+  ROSTER = Array.isArray(roster) ? roster : [];
+  _dataLoadedAt.roster = Date.now();
+}
+
+async function loadSessions(force = false) {
+  if (!force && _isDataFresh('sessions')) return;
+  const sessions = await _fetchJson('/api/sessions', SESSIONS);
+  SESSIONS = Array.isArray(sessions) ? sessions : [];
+  currentSessionIdx = Math.min(currentSessionIdx, Math.max(0, SESSIONS.length - 1));
+  _dataLoadedAt.sessions = Date.now();
+}
+
+async function loadQuestions(force = false) {
+  if (!force && _isDataFresh('questions')) return;
+  const questions = await _fetchJson('/api/questions', QUESTIONS);
+  QUESTIONS = Array.isArray(questions) ? questions : [];
+  _dataLoadedAt.questions = Date.now();
+}
+
+async function loadPageData(page, force = false) {
+  try {
+    if (page === 'dashboard' || page === 'analytics') {
+      await Promise.all([loadRoster(force), loadSessions(force), loadQuestions(force)]);
+    } else if (page === 'attendance') {
+      await Promise.all([loadRoster(force), loadSessions(force)]);
+    } else if (page === 'speech') {
+      await Promise.all([loadSessions(force), loadQuestions(force)]);
+    } else if (page === 'students') {
+      await loadRoster(force);
+    }
+  } catch (e) {
+    console.warn(`Failed loading ${page} data:`, e);
   }
 }
 
@@ -660,6 +767,27 @@ function initWebcam() {
 // ══════════════════════════════════════
 function renderAnalytics() {
   const total = SESSIONS.length;
+  const el = id => document.getElementById(id);
+  if (!total) {
+    if(el('an-total-sessions')) el('an-total-sessions').textContent = '0';
+    if(el('an-avg-att'))        el('an-avg-att').textContent = '--';
+    if(el('an-absent-rate'))    el('an-absent-rate').textContent = '--';
+    if(el('session-comparison-body')) el('session-comparison-body').innerHTML =
+      `<tr><td colspan="7" style="text-align:center;color:var(--muted);padding:20px">No sessions recorded yet</td></tr>`;
+    if(el('student-summary-body')) el('student-summary-body').innerHTML = ROSTER.map((r, i) => `
+      <tr>
+        <td style="color:var(--muted)">${i+1}</td>
+        <td><div class="student-cell">
+          <div class="avatar ${r.ac}">${r.avatar}</div>
+          <div><div class="student-name">${r.name}</div></div>
+        </div></td>
+        <td style="text-align:center">0</td>
+        <td style="text-align:center">0</td>
+        <td style="text-align:center">0</td>
+        <td style="color:var(--muted)">No sessions</td>
+      </tr>`).join('');
+    return;
+  }
   const allRates = SESSIONS.map(s => {
     const p = s.students.filter(x => x.status !== 'Absent').length;
     return Math.round((p / s.students.length) * 100);
@@ -670,7 +798,6 @@ function renderAnalytics() {
     return Math.round((ab / s.students.length) * 100);
   });
   const avgAbsent = Math.round(absentRates.reduce((a,b)=>a+b,0) / total);
-  const el = id => document.getElementById(id);
   if(el('an-total-sessions')) el('an-total-sessions').textContent = total;
   if(el('an-avg-att'))        el('an-avg-att').textContent = avgAtt + '%';
   if(el('an-absent-rate'))    el('an-absent-rate').textContent = avgAbsent + '%';
@@ -739,6 +866,150 @@ function renderAnalytics() {
 }
 
 // ══════════════════════════════════════
+function renderStudentRoster() {
+  const tbody = document.getElementById('student-roster-table');
+  const count = document.getElementById('student-roster-count');
+  if (count) count.textContent = `${ROSTER.length} student${ROSTER.length === 1 ? '' : 's'}`;
+  if (!tbody) return;
+  if (!ROSTER.length) {
+    tbody.innerHTML = `<tr><td colspan="4" style="text-align:center;color:var(--muted);padding:20px">No enrolled students yet</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = ROSTER.map((student, i) => `
+    <tr>
+      <td style="color:var(--muted)">${i + 1}</td>
+      <td><div class="student-cell">
+        <div class="avatar ${student.ac}">${student.avatar}</div>
+        <div><div class="student-name">${student.name}</div></div>
+      </div></td>
+      <td><span class="badge badge-present">Enrolled</span></td>
+      <td><button class="student-delete-btn" onclick="deleteStudentByIndex(${i})">Delete</button></td>
+    </tr>
+  `).join('');
+}
+
+async function deleteStudentByIndex(index) {
+  const student = ROSTER[index];
+  if (!student) return;
+
+  const ok = window.confirm(`Delete ${student.name}? This removes their saved face embeddings and enrollment images.`);
+  if (!ok) return;
+
+  try {
+    const response = await fetch(`${API_BASE}/api/students/${encodeURIComponent(student.name)}`, {
+      method: 'DELETE',
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(result.detail || 'Delete failed');
+
+    const [roster, sessions] = await Promise.all([
+      fetch(`${API_BASE}/api/roster`).then(r => r.json()).catch(() => ROSTER),
+      fetch(`${API_BASE}/api/sessions`).then(r => r.json()).catch(() => SESSIONS),
+    ]);
+    ROSTER = roster;
+    SESSIONS = sessions;
+    _dataLoadedAt.roster = Date.now();
+    _dataLoadedAt.sessions = Date.now();
+    currentSessionIdx = Math.min(currentSessionIdx, Math.max(0, SESSIONS.length - 1));
+    renderStudentRoster();
+    renderAnalytics();
+    renderSessionTabs();
+    renderSessionSummary();
+    renderAttendanceBadges();
+    renderAttendanceTable();
+    renderDashTable();
+    renderQuestionStudentSelect();
+    toast(`${result.student || student.name} deleted`, 'success');
+  } catch (error) {
+    toast(error.message || 'Delete failed', 'warn');
+  }
+}
+
+function renderEnrollmentResult(result) {
+  const box = document.getElementById('enroll-result');
+  if (!box) return;
+  const accepted = Number(result.accepted || 0);
+  const rejected = Number(result.rejected || 0);
+  const tone = accepted ? 'success' : 'warn';
+  const rows = (result.results || []).map(item => `
+    <div class="enroll-result-row ${item.status === 'accepted' ? 'accepted' : 'rejected'}">
+      <span>${item.status === 'accepted' ? 'Accepted' : 'Rejected'}</span>
+      <span>${item.reason || 'ok'}</span>
+    </div>
+  `).join('');
+  box.innerHTML = `
+    <div class="notif ${tone}" style="margin-bottom:0">
+      <div class="notif-text">
+        <strong>${result.student || 'Student'}</strong> - ${accepted} accepted, ${rejected} rejected
+        ${result.total_samples ? `<div class="notif-time">${result.total_samples} saved sample${result.total_samples === 1 ? '' : 's'} total</div>` : ''}
+      </div>
+    </div>
+    ${rows ? `<div class="enroll-result-list">${rows}</div>` : ''}
+  `;
+}
+
+async function submitEnrollment(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const button = document.getElementById('enroll-submit-btn');
+  const resultBox = document.getElementById('enroll-result');
+  const files = document.getElementById('enroll-images')?.files || [];
+  const name = document.getElementById('enroll-student-name')?.value.trim();
+  if (!name || !files.length) {
+    toast('Student name and at least one image are required', 'warn');
+    return;
+  }
+
+  const formData = new FormData();
+  formData.append('student_name', name);
+  Array.from(files).forEach(file => formData.append('images', file));
+  formData.append('blur_threshold', document.getElementById('enroll-blur')?.value || '35');
+  formData.append('min_detection_score', document.getElementById('enroll-score')?.value || '0.55');
+  formData.append('min_face_size', document.getElementById('enroll-face-size')?.value || '50');
+
+  if (button) {
+    button.disabled = true;
+    button.textContent = 'Enrolling...';
+  }
+  if (resultBox) resultBox.innerHTML = '';
+
+  try {
+    const response = await fetch(`${API_BASE}/api/enroll-student`, {
+      method: 'POST',
+      body: formData,
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(result.detail || 'Enrollment failed');
+
+    renderEnrollmentResult(result);
+    const roster = await fetch(`${API_BASE}/api/roster`).then(r => r.json()).catch(() => ROSTER);
+    ROSTER = roster;
+    _dataLoadedAt.roster = Date.now();
+    renderStudentRoster();
+    renderAnalytics();
+    renderQuestionStudentSelect();
+    if (result.accepted) {
+      form.reset();
+      document.getElementById('enroll-blur').value = '35';
+      document.getElementById('enroll-score').value = '0.55';
+      document.getElementById('enroll-face-size').value = '50';
+      toast('Student enrolled', 'success');
+    } else {
+      toast('No images were accepted', 'warn');
+    }
+  } catch (error) {
+    if (resultBox) {
+      resultBox.innerHTML = `<div class="notif error" style="margin-bottom:0"><div class="notif-text"><strong>Enrollment failed</strong><div class="notif-time">${error.message}</div></div></div>`;
+    }
+    toast(error.message || 'Enrollment failed', 'error');
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.textContent = 'Enroll Student';
+    }
+  }
+}
+
 function renderDashTable() {
   const tb = document.getElementById('dash-table');
   if(!tb) return;
@@ -756,17 +1027,31 @@ function renderDashTable() {
 function renderSessionTabs() {
   const el = document.getElementById('session-tabs');
   if (!el) return;
+  if (!SESSIONS.length) {
+    el.innerHTML = '<div style="color:var(--muted);font-size:13px;">No sessions recorded yet</div>';
+    renderSessionDeleteButton();
+    return;
+  }
   el.innerHTML = SESSIONS.map((s, i) => `
     <button class="session-tab ${i === currentSessionIdx ? 'active' : ''}" onclick="switchSession(${i})">
       <span class="session-tab-label">${s.label}</span>
       <span class="session-tab-date">${s.date}</span>
     </button>`).join('');
+  renderSessionDeleteButton();
+}
+
+function renderSessionDeleteButton() {
+  const btn = document.getElementById('delete-session-btn');
+  if (!btn) return;
+  const session = SESSIONS[currentSessionIdx];
+  btn.disabled = !session || !session.id;
 }
 
 function renderSessionSummary() {
   const el = document.getElementById('session-summary-bar');
   if (!el) return;
   const s = SESSIONS[currentSessionIdx];
+  if (!s) { el.innerHTML = ''; return; }
   const total   = s.students.length;
   const present = s.students.filter(x => x.status === 'Present').length;
   const late    = s.students.filter(x => x.status === 'Late').length;
@@ -786,6 +1071,16 @@ function renderSessionSummary() {
 
 function renderAttendanceBadges() {
   const s = SESSIONS[currentSessionIdx];
+  if (!s) {
+    const badges = document.getElementById('attend-badges');
+    const title = document.getElementById('attend-card-title');
+    const sub = document.getElementById('attend-subtitle');
+    if (badges) badges.innerHTML = '';
+    if (title) title.textContent = 'Attendance';
+    if (sub) sub.textContent = '';
+    renderSessionDeleteButton();
+    return;
+  }
   const present = s.students.filter(x => x.status === 'Present').length;
   const late    = s.students.filter(x => x.status === 'Late').length;
   const absent  = s.students.filter(x => x.status === 'Absent').length;
@@ -810,6 +1105,46 @@ function switchSession(idx) {
   renderQuestionStudentSelect();
 }
 
+async function deleteCurrentSession() {
+  const session = SESSIONS[currentSessionIdx];
+  if (!session || !session.id) {
+    toast('No session selected', 'warn');
+    return;
+  }
+
+  const ok = window.confirm(`Delete ${session.label} from ${session.date}? This removes its attendance and vision logs.`);
+  if (!ok) return;
+
+  const btn = document.getElementById('delete-session-btn');
+  if (btn) btn.disabled = true;
+
+  try {
+    const res = await fetch(`${API_BASE}/api/sessions/${encodeURIComponent(session.id)}`, {
+      method: 'DELETE',
+    });
+    if (!res.ok) {
+      const detail = await res.text().catch(() => `HTTP ${res.status}`);
+      throw new Error(detail);
+    }
+
+    SESSIONS = await fetch(`${API_BASE}/api/sessions`).then(r => r.json()).catch(() => []);
+    _dataLoadedAt.sessions = Date.now();
+    currentSessionIdx = Math.min(currentSessionIdx, Math.max(0, SESSIONS.length - 1));
+    renderSessionTabs();
+    renderSessionSummary();
+    renderAttendanceBadges();
+    renderAttendanceTable();
+    renderTimeline();
+    renderAnalytics();
+    updateDashStats();
+    renderQuestionStudentSelect();
+    toast(`${session.label} deleted`, 'success');
+  } catch (err) {
+    toast(`Delete failed: ${err.message}`, 'warn');
+    renderSessionDeleteButton();
+  }
+}
+
 function cycleStatus(sessionIdx, studentIdx) {
   const cycle = ['Present', 'Late', 'Absent'];
   const s = SESSIONS[sessionIdx].students[studentIdx];
@@ -825,6 +1160,10 @@ function cycleStatus(sessionIdx, studentIdx) {
 function renderAttendanceTable() {
   const tb = document.getElementById('attendance-table');
   if (!tb) return;
+  if (!SESSIONS[currentSessionIdx]) {
+    tb.innerHTML = `<tr><td colspan="5" style="text-align:center;color:var(--muted);padding:24px;">No sessions recorded yet.</td></tr>`;
+    return;
+  }
   const search = (document.getElementById('attend-search')?.value || '').toLowerCase();
   const filter = document.getElementById('attend-filter')?.value || '';
   const students = SESSIONS[currentSessionIdx].students;
@@ -1194,7 +1533,16 @@ function getSelectedQuestionStudent() {
 }
 
 let _currentPage = 'dashboard';
-function navigate(page) {
+function renderActivePage(page) {
+  if(page==='dashboard') { updateDashStats(); renderDashTable(); renderQuestionFeed(); renderTimeline(); }
+  if(page==='attendance') { renderSessionTabs(); renderSessionSummary(); renderAttendanceBadges(); renderAttendanceTable(); }
+  if(page==='vision')    { initWebcam(); }
+  if(page==='speech')    { renderQuestionStudentSelect(); renderNLPQuestions(); renderWaveform(); }
+  if(page==='analytics') { renderAnalytics(); renderTopicChart(); renderMoodChart(); renderAttendChart(); renderTopStudents(); }
+  if(page==='students')  { renderStudentRoster(); }
+}
+
+async function navigate(page) {
   _currentPage = page;
   document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
   document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
@@ -1206,6 +1554,7 @@ function navigate(page) {
     attendance:'Attendance',
     speech:'Speech & NLP',
     analytics:'Analytics',
+    students:'Students',
     settings:'Settings'
   };
   const topbar = document.querySelector('.topbar-title');
@@ -1218,11 +1567,10 @@ function navigate(page) {
     }
   });
 
-  // lazy render
-  if(page==='dashboard') { updateDashStats(); renderDashTable(); renderQuestionFeed(); renderTimeline(); }
-  if(page==='vision')    { initWebcam(); }
-  if(page==='speech')    { renderQuestionStudentSelect(); renderNLPQuestions(); renderWaveform(); }
-  if(page==='analytics') { renderTopicChart(); renderMoodChart(); renderAttendChart(); renderTopStudents(); }
+  renderActivePage(page);
+  loadPageData(page).then(() => {
+    if (_currentPage === page) renderActivePage(page);
+  }).catch(() => {});
 }
 
 // ══════════════════════════════════════
@@ -1231,6 +1579,7 @@ function navigate(page) {
 let micActive = false;
 let _recognition = null;
 let qIdx = 0;
+let _classificationInFlight = false;
 
 // Simulated questions used as fallback when browser has no SpeechRecognition
 const sampleQuestions = [
@@ -1264,6 +1613,7 @@ async function _classifyAndDisplay(transcript, fallbackTopic = null, fallbackCon
   if (textEl) { textEl.textContent = transcript; textEl.classList.remove('placeholder'); }
 
   toast('🧠 Classifying… (NLP model may take a moment on first run)', 'info');
+  _classificationInFlight = true;
 
   try {
     // 60-second timeout — DeBERTa can be slow on first load
@@ -1312,6 +1662,8 @@ async function _classifyAndDisplay(transcript, fallbackTopic = null, fallbackCon
       document.getElementById('conf-fill').style.width = (fallbackConf || 85) + '%';
       document.getElementById('conf-val').textContent  = (fallbackConf || 85) + '%';
     }
+  } finally {
+    _classificationInFlight = false;
   }
 }
 
@@ -1348,12 +1700,12 @@ function toggleMic() {
   _recognition.interimResults = false;
   _recognition.maxAlternatives = 1;
 
-  _recognition.onresult = async (event) => {
+  _recognition.onresult = (event) => {
     const transcript = event.results[0][0].transcript;
-    await _classifyAndDisplay(transcript);
     micActive = false;
     _setMicUI(false);
     _recognition = null;
+    _classifyAndDisplay(transcript);
   };
   _recognition.onerror = () => { micActive = false; _setMicUI(false); _recognition = null; };
   _recognition.onend   = () => { micActive = false; _setMicUI(false); _recognition = null; };
@@ -1503,41 +1855,19 @@ updateClock();
 //  INIT
 // ══════════════════════════════════════
 window.addEventListener('DOMContentLoaded', async () => {
-  await loadDataFromAPI();
+  await loadPageData('dashboard', true);
+  renderActivePage('dashboard');
 
-  updateDashStats();
-  renderDashTable();
-  renderAnalytics();
-  renderSessionTabs();
-  renderSessionSummary();
-  renderAttendanceBadges();
-  renderAttendanceTable();
-  renderQuestionFeed();
-  renderTimeline();
-  renderWaveform();
-  renderQuestionStudentSelect();
-
-  // Poll for updated attendance + questions every 10 seconds
+  // Refresh only the page the user is viewing. Skip Vision Feed so camera
+  // frames are not competing with sessions/questions polling.
   setInterval(async () => {
     try {
-      const [sessions, questions] = await Promise.all([
-        fetch(`${API_BASE}/api/sessions`).then(r => r.json()).catch(() => []),
-        fetch(`${API_BASE}/api/questions`).then(r => r.json()).catch(() => []),
-      ]);
-      let changed = false;
-      if (sessions.length)  { SESSIONS  = sessions;  changed = true; }
-      if (questions.length) { QUESTIONS = questions; changed = true; }
-      if (changed) {
-        updateDashStats();
-        renderDashTable(); renderTimeline(); renderQuestionFeed();
-        renderSessionTabs(); renderSessionSummary(); renderAttendanceBadges(); renderAttendanceTable();
-        renderAnalytics();
-        renderQuestionStudentSelect();
-        if (_currentPage === 'speech') renderNLPQuestions();
-        if (_currentPage === 'analytics') renderTopStudents();
-      }
+      if (_currentPage === 'vision' || _currentPage === 'settings') return;
+      if (_currentPage === 'speech' && (micActive || _classificationInFlight)) return;
+      await loadPageData(_currentPage, true);
+      renderActivePage(_currentPage);
     } catch (_) {}
-  }, 10000);
+  }, 30000);
 });
 </script>
 </body>
