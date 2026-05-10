@@ -54,6 +54,7 @@ class SessionLogger:
         csv_path = self.config.attendance_log_path
         csv_path.parent.mkdir(parents=True, exist_ok=True)
         write_header = not csv_path.exists() or csv_path.stat().st_size == 0
+        existing_keys: set[tuple[str, str]] = set()
         fieldnames = [
             "session_id",
             "student_name",
@@ -62,12 +63,21 @@ class SessionLogger:
             "first_track_id",
         ]
 
+        if csv_path.exists() and csv_path.stat().st_size > 0:
+            with csv_path.open(encoding="utf-8") as file_handle:
+                for row in csv.DictReader(file_handle):
+                    existing_keys.add((row.get("session_id", ""), row.get("student_name", "")))
+
         with csv_path.open("a", newline="", encoding="utf-8") as file_handle:
             writer = csv.DictWriter(file_handle, fieldnames=fieldnames)
             if write_header:
                 writer.writeheader()
             for row in rows:
+                key = (str(row.get("session_id", "")), str(row.get("student_name", "")))
+                if key in existing_keys:
+                    continue
                 writer.writerow(row)
+                existing_keys.add(key)
 
     def save_face_crop(
         self,

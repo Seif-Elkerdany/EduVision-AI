@@ -76,6 +76,13 @@ Shows one card per recorded session with:
 ### Vision Feed
 Opens your webcam and streams frames to the Python CV pipeline via WebSocket.
 
+Session lifecycle:
+- Opening **Vision Feed** starts a new backend vision session.
+- The session id is shown in the Vision Feed status text.
+- Leaving the page, refreshing, closing the tab, or losing the camera/WebSocket connection finalizes that session.
+- Attendance rows are written when the session finalizes.
+- Duplicate rows for the same student in the same session are skipped.
+
 Expected behavior:
 1. Camera turns on when you click **Vision Feed** in the sidebar
 2. Green bounding boxes appear around detected faces

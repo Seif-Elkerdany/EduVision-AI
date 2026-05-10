@@ -38,6 +38,7 @@ EMBEDDINGS_PATH = PROJECT_ROOT / "data" / "embeddings" / "student_embeddings.pkl
 ATTENDANCE_CSV  = PROJECT_ROOT / "data" / "logs" / "attendance_log.csv"
 SESSION_JSONL   = PROJECT_ROOT / "data" / "logs" / "session_log.jsonl"
 QUESTIONS_JSONL = PROJECT_ROOT / "data" / "logs" / "questions_log.jsonl"
+VISION_SESSIONS_JSONL = PROJECT_ROOT / "data" / "logs" / "vision_sessions.jsonl"
 FRONTEND_DIR    = PROJECT_ROOT / "Frontend"
 
 
@@ -73,18 +74,56 @@ def _color(name: str) -> str:
     return _COLORS[abs(hash(name)) % len(_COLORS)]
 
 
-# singleton CV pipeline with thread-safe lazy initialization
-_pipeline: SmartClassroomPipeline | None = None
+def _enrolled_student_names() -> list[str]:
+    if not EMBEDDINGS_PATH.exists():
+        return []
+    payload = load_embedding_database(EMBEDDINGS_PATH)
+    return sorted(payload.get("students", {}).keys())
+
+
+def _parse_dt(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value)
+    except Exception:
+        return None
+
+
+def _read_vision_session_records() -> dict[str, dict]:
+    records: dict[str, dict] = {}
+    if not VISION_SESSIONS_JSONL.exists():
+        return records
+    with VISION_SESSIONS_JSONL.open(encoding="utf-8") as f:
+        for line in f:
+            try:
+                rec = json.loads(line.strip())
+            except Exception:
+                continue
+            sid = rec.get("session_id", "")
+            if sid:
+                records[sid] = rec
+    return records
+
+
+def _write_vision_session_record(record: dict) -> None:
+    VISION_SESSIONS_JSONL.parent.mkdir(parents=True, exist_ok=True)
+    with VISION_SESSIONS_JSONL.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(record, ensure_ascii=True) + "\n")
+
+
+# CV model/session state.
+# A Vision Feed browser connection owns exactly one SmartClassroomPipeline.
+# That keeps attendance/session state from leaking across reconnects.
+_models_ready = False
+_last_pipeline_runtime_device: str | None = None
+_active_vision_sessions: set[str] = set()
 _pipeline_lock = threading.Lock()
 
 
-def get_pipeline() -> SmartClassroomPipeline:
-    global _pipeline
-    with _pipeline_lock:
-        if _pipeline is None:
-            cfg = CVConfig(device=detect_device())
-            _pipeline = SmartClassroomPipeline(cfg)
-    return _pipeline
+def create_vision_pipeline() -> SmartClassroomPipeline:
+    cfg = CVConfig(device=detect_device())
+    return SmartClassroomPipeline(cfg)
 
 
 #  FastAPI app 
@@ -95,22 +134,49 @@ app.mount("/static", StaticFiles(directory=str(FRONTEND_DIR)), name="static")
 
 @app.on_event("startup")
 async def _preload_pipeline() -> None:
-    """Warm up InsightFace models in the background without blocking startup."""
+    """Prepare the CV session factory without creating a user-facing session."""
     async def _warm():
+        global _models_ready, _last_pipeline_runtime_device
         try:
             loop = asyncio.get_running_loop()
-            await loop.run_in_executor(None, get_pipeline)
-            print("[EduVision] CV pipeline ready.")
+            pipeline = await loop.run_in_executor(None, create_vision_pipeline)
+            with _pipeline_lock:
+                _models_ready = True
+                _last_pipeline_runtime_device = pipeline.detector.runtime_device
+            print("[EduVision] CV session factory ready.")
         except Exception as exc:
-            print(f"[EduVision] CV pipeline warm-up skipped: {exc}")
+            print(f"[EduVision] CV session factory warm-up skipped: {exc}")
     asyncio.create_task(_warm())
 
 
 @app.get("/api/health")
 def health() -> dict:
+    detected_device = detect_device()
+    torch_cuda_available = False
+    ort_available_providers: list[str] = []
+
+    try:
+        import torch
+
+        torch_cuda_available = bool(torch.cuda.is_available())
+    except Exception:
+        pass
+
+    try:
+        import onnxruntime as ort
+
+        ort_available_providers = list(ort.get_available_providers())
+    except Exception:
+        pass
+
     return {
         "status": "ok",
-        "pipeline_ready": _pipeline is not None,
+        "pipeline_ready": _models_ready,
+        "detected_device": detected_device,
+        "pipeline_runtime_device": _last_pipeline_runtime_device,
+        "active_vision_sessions": sorted(_active_vision_sessions),
+        "torch_cuda_available": torch_cuda_available,
+        "ort_available_providers": ort_available_providers,
         "embeddings_exist": EMBEDDINGS_PATH.exists(),
         "sessions_exist": ATTENDANCE_CSV.exists(),
     }
@@ -125,17 +191,14 @@ def root() -> FileResponse:
 # /api/roster reads the .pkl embeddings file and returns the list of enrolled students
 @app.get("/api/roster")
 def get_roster() -> list[dict]:
-    if not EMBEDDINGS_PATH.exists():
-        return []
-    payload = load_embedding_database(EMBEDDINGS_PATH)
     return [
         {"name": name, "avatar": _initials(name), "ac": _color(name)}
-        for name in sorted(payload.get("students", {}).keys())
+        for name in _enrolled_student_names()
     ]
 
 
 # /api/sessions returns attendance summaries for all sessions recorded in attendance_log.csv, enriched with mood data from session_log.jsonl
-@app.get("/api/sessions")
+@app.get("/api/sessions-old", include_in_schema=False)
 def get_sessions() -> list[dict]:
     if not ATTENDANCE_CSV.exists() or ATTENDANCE_CSV.stat().st_size == 0:
         return []
@@ -187,6 +250,107 @@ def get_sessions() -> list[dict]:
                 time_in = datetime.fromisoformat(row["confirmed_at"]).strftime("%H:%M")
             except Exception:
                 time_in = "—"
+
+            students.append({
+                "name": name,
+                "avatar": _initials(name), "ac": _color(name),
+                "status": row.get("attendance_status", "Present"),
+                "mood": _MOOD_EMOJI.get(mood_label, _MOOD_EMOJI["unknown"]),
+                "time": time_in,
+            })
+
+        result.append({
+            "label": f"Session {i + 1}",
+            "date": date_str, "time": time_str,
+            "students": students,
+        })
+
+    return result
+
+
+# /api/sessions returns attendance summaries for all recorded sessions. Each
+# session is expanded against the enrolled roster, so enrolled students who were
+# not confirmed during that session appear as Absent.
+@app.get("/api/sessions")
+def get_sessions_with_absences() -> list[dict]:
+    session_map: dict[str, dict[str, dict]] = {}
+    if ATTENDANCE_CSV.exists() and ATTENDANCE_CSV.stat().st_size > 0:
+        with ATTENDANCE_CSV.open(encoding="utf-8") as f:
+            for row in csv.DictReader(f):
+                sid = row.get("session_id", "")
+                name = row.get("student_name", "")
+                if not sid or not name:
+                    continue
+
+                student_rows = session_map.setdefault(sid, {})
+                existing = student_rows.get(name)
+                if existing is None:
+                    student_rows[name] = row
+                    continue
+
+                current_dt = _parse_dt(row.get("confirmed_at"))
+                existing_dt = _parse_dt(existing.get("confirmed_at"))
+                if existing_dt is None or (current_dt is not None and current_dt < existing_dt):
+                    student_rows[name] = row
+
+    mood_map: dict[str, dict[str, str]] = {}
+    if SESSION_JSONL.exists():
+        with SESSION_JSONL.open(encoding="utf-8") as f:
+            for line in f:
+                try:
+                    rec = json.loads(line.strip())
+                except Exception:
+                    continue
+                sid, name = rec.get("session_id", ""), rec.get("predicted_student", "")
+                if sid and name and name != "Unknown":
+                    mood_map.setdefault(sid, {})[name] = rec.get("mood_label", "neutral")
+
+    vision_sessions = _read_vision_session_records()
+    session_ids = sorted(set(session_map) | set(vision_sessions))
+    if not session_ids:
+        return []
+
+    enrolled_names = _enrolled_student_names()
+    result = []
+
+    for i, sid in enumerate(session_ids):
+        rows_by_name = session_map.get(sid, {})
+        moods = mood_map.get(sid, {})
+        session_record = vision_sessions.get(sid, {})
+
+        try:
+            dt = datetime.strptime(sid, "%Y%m%d_%H%M%S")
+            date_str = dt.strftime("%a, %d %b %Y")
+            start_str = dt.strftime("%H:%M")
+            end_times = [
+                parsed_dt
+                for row in rows_by_name.values()
+                if (parsed_dt := _parse_dt(row.get("confirmed_at"))) is not None
+            ]
+            finalized_at = _parse_dt(session_record.get("finalized_at"))
+            if finalized_at is not None:
+                end_times.append(finalized_at)
+            end_str = max(end_times).strftime("%H:%M") if end_times else start_str
+            time_str = start_str + " - " + end_str
+        except Exception:
+            date_str, time_str = sid, "-"
+
+        students = []
+        for name in sorted(set(enrolled_names) | set(rows_by_name)):
+            row = rows_by_name.get(name)
+            if row is None:
+                students.append({
+                    "name": name,
+                    "avatar": _initials(name), "ac": _color(name),
+                    "status": "Absent",
+                    "mood": "-",
+                    "time": "-",
+                })
+                continue
+
+            mood_label = moods.get(name, "neutral")
+            confirmed_at = _parse_dt(row.get("confirmed_at"))
+            time_in = confirmed_at.strftime("%H:%M") if confirmed_at else "-"
 
             students.append({
                 "name": name,
@@ -275,28 +439,47 @@ def _process_frame(pipeline, frame):
 async def vision_ws(websocket: WebSocket) -> None:
     await websocket.accept()
     loop = asyncio.get_running_loop()
-    pipeline = get_pipeline()
+    pipeline = create_vision_pipeline()
+    session_id = pipeline.config.session_id
+    with _pipeline_lock:
+        _active_vision_sessions.add(session_id)
+    print(f"[EduVision] Vision session started: {session_id}")
     try:
         while True:
             data = await websocket.receive_bytes()
             arr = np.frombuffer(data, dtype=np.uint8)
             frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
             if frame is None:
-                await websocket.send_json({"faces": []})
+                await websocket.send_json({"session_id": session_id, "faces": []})
                 continue
             # Run CPU-heavy work off the async event loop
             faces = await loop.run_in_executor(None, _process_frame, pipeline, frame)
-            await websocket.send_json({"faces": faces})
-    except (WebSocketDisconnect, Exception):
-        pass
+            await websocket.send_json({"session_id": session_id, "faces": faces})
+    except WebSocketDisconnect:
+        print(f"[EduVision] Vision session disconnected: {session_id}")
+    except Exception as exc:
+        print(f"[EduVision] Vision session error ({session_id}): {exc}")
     finally:
-        # Save attendance to CSV when client disconnects
+        global _last_pipeline_runtime_device
         try:
-            summary = pipeline.attendance_manager.get_summary_rows()
-            if summary:
-                pipeline.session_logger.write_attendance_summary(summary)
-        except Exception:
-            pass
+            summary = pipeline.finalize()
+            if pipeline.frame_index > 0 or summary["attendance_count"] > 0:
+                _write_vision_session_record({
+                    "session_id": session_id,
+                    "finalized_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+                    "frame_count": pipeline.frame_index,
+                    "attendance_count": summary["attendance_count"],
+                })
+            print(
+                "[EduVision] Vision session finalized: "
+                f"{session_id} ({summary['attendance_count']} attendance rows)"
+            )
+        except Exception as exc:
+            print(f"[EduVision] Vision session finalize failed ({session_id}): {exc}")
+        finally:
+            with _pipeline_lock:
+                _active_vision_sessions.discard(session_id)
+                _last_pipeline_runtime_device = pipeline.detector.runtime_device
 
 
 if __name__ == "__main__":

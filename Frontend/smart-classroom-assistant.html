@@ -530,6 +530,7 @@ async function loadDataFromAPI() {
 let _visionWS      = null;
 let _frameTimer    = null;
 let _webcamStarted = false;
+let _visionSessionId = null;
 
 function initWebcam() {
   if (_webcamStarted) return;   // already running
@@ -604,10 +605,19 @@ function initWebcam() {
   function connectVisionWS() {
     try {
       _visionWS = new WebSocket(`${API_BASE.replace(/^http/, 'ws')}/ws/vision`);
-      _visionWS.onopen  = () => { if (status) status.textContent = 'Face detection active (live)'; };
-      _visionWS.onmessage = (ev) => { try { drawDetections(JSON.parse(ev.data).faces || []); } catch(_) {} };
+      _visionWS.onopen  = () => { if (status) status.textContent = 'Starting new vision session...'; };
+      _visionWS.onmessage = (ev) => {
+        try {
+          const payload = JSON.parse(ev.data);
+          if (payload.session_id && payload.session_id !== _visionSessionId) {
+            _visionSessionId = payload.session_id;
+            if (status) status.textContent = `Face detection active (${_visionSessionId})`;
+          }
+          drawDetections(payload.faces || []);
+        } catch(_) {}
+      };
       _visionWS.onerror = () => startCornerAnimation();
-      _visionWS.onclose = () => { _visionWS = null; startCornerAnimation(); };
+      _visionWS.onclose = () => { _visionWS = null; _visionSessionId = null; startCornerAnimation(); };
     } catch (_) { startCornerAnimation(); }
   }
 
