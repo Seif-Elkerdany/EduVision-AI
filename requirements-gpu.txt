@@ -1,0 +1,8 @@
+# Install after requirements.txt on NVIDIA/CUDA systems.
+# Uses CUDA-enabled PyTorch wheels plus ONNX Runtime CUDA/cuDNN DLL packages.
+--extra-index-url https://download.pytorch.org/whl/cu128
+
+torch==2.10.0+cu128
+torchvision==0.25.0+cu128
+torchaudio==2.10.0+cu128
+onnxruntime-gpu[cuda,cudnn]==1.24.4

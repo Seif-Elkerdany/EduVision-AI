@@ -14,8 +14,30 @@ def generate_session_id() -> str:
     return datetime.now().astimezone().strftime("%Y%m%d_%H%M%S")
 
 
+def preload_onnxruntime_cuda_dlls() -> None:
+    """Best-effort preload for CUDA/cuDNN DLLs used by ONNX Runtime on Windows."""
+    try:
+        import torch  # noqa: F401
+    except Exception:
+        pass
+
+    try:
+        import onnxruntime as ort
+
+        preload = getattr(ort, "preload_dlls", None)
+        if callable(preload):
+            try:
+                preload()
+            except Exception:
+                preload(directory="")
+    except Exception:
+        pass
+
+
 def detect_device() -> str:
     """Prefer CUDA when ONNX Runtime or Torch reports GPU support."""
+    preload_onnxruntime_cuda_dlls()
+
     try:
         import onnxruntime as ort
 

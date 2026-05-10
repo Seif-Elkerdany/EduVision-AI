@@ -28,6 +28,20 @@ python -m pip install torch==2.10.0 torchvision==0.25.0 torchaudio==2.10.0 \
   --index-url https://download.pytorch.org/whl/cpu
 ```
 
+## Optional GPU Setup
+
+For NVIDIA GPUs, install the CUDA packages after the normal requirements:
+
+```bash
+python -m pip install -r requirements-gpu.txt
+```
+
+Verify that both PyTorch and ONNX Runtime can see the GPU:
+
+```bash
+python -c "import torch, onnxruntime as ort; ort.preload_dlls(); print(torch.cuda.is_available()); print(torch.cuda.get_device_name(0)); print(ort.get_available_providers())"
+```
+
 ## Run Push-To-Talk Subject Classification
 
 Use the root CLI for the full microphone workflow:

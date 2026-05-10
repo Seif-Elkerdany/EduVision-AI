@@ -7,7 +7,7 @@ from typing import Any
 import cv2
 import numpy as np
 
-from .config import CVConfig
+from .config import CVConfig, preload_onnxruntime_cuda_dlls
 
 
 LOGGER = logging.getLogger(__name__)
@@ -76,6 +76,9 @@ class FaceDetector:
             raise RuntimeError(
                 "InsightFace is not installed. Install requirements in the EduVision venv first."
             ) from exc
+
+        if device == "cuda":
+            preload_onnxruntime_cuda_dlls()
 
         app = FaceAnalysis(
             name=self.config.insightface_model_pack,

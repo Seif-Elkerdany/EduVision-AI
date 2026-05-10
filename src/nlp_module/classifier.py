@@ -60,7 +60,20 @@ def get_classifier():
         with quiet_model_output():
             from transformers import pipeline
 
-            _classifier = pipeline("zero-shot-classification", model=MODEL_NAME)
+            device = -1
+            try:
+                import torch
+
+                if torch.cuda.is_available():
+                    device = 0
+            except Exception:
+                pass
+
+            _classifier = pipeline(
+                "zero-shot-classification",
+                model=MODEL_NAME,
+                device=device,
+            )
     return _classifier
 
 
